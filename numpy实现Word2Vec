@@ -1,0 +1,157 @@
+import numpy as np
+import collections
+import math
+
+# ==================== 1. 数据预处理 ====================
+def build_dataset(text, vocab_size=50000):
+    """构建词汇表并生成训练数据"""
+    # 统计词频
+    words = text.split()
+    count = [['UNK', -1]]
+    count.extend(collections.Counter(words).most_common(vocab_size-1))
+    
+    # 创建词到ID的映射
+    word2id = {}
+    for word, _ in count:
+        word2id[word] = len(word2id)
+    
+    # 将文本转换为ID序列
+    data = [word2id[word] if word in word2id else 0 for word in words]
+    
+    return data, word2id, count
+
+# ==================== 2. 生成训练批次 ====================
+def generate_batch(data, batch_size, window_size=2, num_neg_samples=5):
+    """生成训练批次（中心词+上下文词+负样本）"""
+    # 初始化批次容器
+    center_words = np.zeros(batch_size, dtype=np.int32)
+    context_words = np.zeros((batch_size, 1), dtype=np.int32)
+    labels = np.ones((batch_size, 1 + num_neg_samples), dtype=np.int32)
+    labels[:, 1:] = 0  # 负样本标签设为0
+    
+    # 创建采样分布（根据词频的3/4次方）
+    word_counts = np.array([count for word, count in count])
+    sampling_dist = word_counts**0.75 / np.sum(word_counts**0.75)
+    
+    # 填充数据
+    idx = 0
+    for i, center in enumerate(data):
+        # 获取上下文窗口
+        context = data[max(0, i-window_size):i] + data[i+1:i+window_size+1]
+        
+        # 生成正样本
+        for target in context:
+            if idx >= batch_size:
+                return center_words, context_words, labels
+            center_words[idx] = center
+            context_words[idx, 0] = target  # 正样本
+            
+            # 生成负样本（随机采样）
+            neg_samples = np.random.choice(len(word_counts), 
+                                          size=num_neg_samples,
+                                          p=sampling_dist)
+            labels[idx, 1:] = neg_samples
+            idx += 1
+    return center_words, context_words, labels
+
+# ==================== 3. 模型参数初始化 ====================
+class Word2VecModel:
+    def __init__(self, vocab_size, embedding_dim=100):
+        # 输入层到隐藏层的权重矩阵（词向量矩阵）
+        self.W1 = np.random.randn(vocab_size, embedding_dim) * 0.01
+        
+        # 隐藏层到输出层的权重矩阵
+        self.W2 = np.random.randn(embedding_dim, vocab_size) * 0.01
+
+# ==================== 4. 前向传播与损失计算 ====================        
+def forward_loss(model, center, context, labels):
+    """计算前向传播和损失（含负采样）"""
+    # 获取输入词向量
+    h = model.W1[center]  # (batch_size, embedding_dim)
+    
+    # 正样本得分计算
+    pos_score = np.sum(h * model.W2.T[labels[:, 0]], axis=1)  # (batch_size,)
+    
+    # 负样本得分计算
+    neg_scores = np.zeros((labels.shape[0], labels.shape[1]-1))
+    for i in range(1, labels.shape[1]):
+        neg_scores[:,i-1] = np.sum(h * model.W2.T[labels[:,i]], axis=1)
+    
+    # 计算Sigmoid损失
+    pos_loss = np.log(1 + np.exp(-pos_score))  # 正样本损失
+    neg_loss = np.sum(np.log(1 + np.exp(neg_scores)), axis=1)  # 负样本损失
+    total_loss = np.mean(pos_loss + neg_loss)
+    
+    return total_loss
+
+# ==================== 5. 反向传播与梯度计算 ====================
+def backward(model, center, context, labels, lr=0.01):
+    """手动计算梯度并更新参数"""
+    batch_size = center.shape[0]
+    
+    # 获取词向量和梯度
+    h = model.W1[center]  # (batch_size, embedding_dim)
+    grad_W1 = np.zeros_like(model.W1)
+    grad_W2 = np.zeros_like(model.W2)
+    
+    # 正样本梯度
+    pos_sigmoid = 1 / (1 + np.exp(np.sum(h * model.W2.T[labels[:,0]], axis=1)))
+    pos_grad = (pos_sigmoid - 1).reshape(-1, 1)  # (batch_size, 1)
+    
+    # 更新W2（正样本部分）
+    np.add.at(grad_W2.T, labels[:,0], pos_grad * h)
+    
+    # 负样本梯度
+    for i in range(1, labels.shape[1]):
+        neg_sigmoid = 1 / (1 + np.exp(-np.sum(h * model.W2.T[labels[:,i]], axis=1)))
+        neg_grad = neg_sigmoid.reshape(-1, 1)  # (batch_size, 1)
+        
+        # 更新W2（负样本部分）
+        np.add.at(grad_W2.T, labels[:,i], neg_grad * h)
+    
+    # 更新W1梯度
+    pos_part = pos_grad * model.W2[labels[:,0]]
+    neg_part = np.sum([model.W2[labels[:,i]] * neg_grad for i in range(1, labels.shape[1])], axis=0)
+    np.add.at(grad_W1, center, (pos_part + neg_part))
+    
+    # 参数更新
+    model.W1 -= lr * grad_W1 / batch_size
+    model.W2 -= lr * grad_W2 / batch_size
+
+# ==================== 6. 训练流程 ====================
+# 示例数据
+text = "natural language processing and machine learning are fascinating areas of study"
+data, word2id, count = build_dataset(text)
+
+# 超参数设置
+embedding_dim = 10
+batch_size = 32
+num_steps = 1000
+learning_rate = 0.1
+
+# 初始化模型
+model = Word2VecModel(len(word2id), embedding_dim)
+
+# 训练循环
+for step in range(num_steps):
+    # 生成训练批次
+    centers, contexts, labels = generate_batch(data, batch_size)
+    
+    # 计算损失
+    loss = forward_loss(model, centers, contexts, labels)
+    
+    # 反向传播更新参数
+    backward(model, centers, contexts, labels, lr=learning_rate)
+    
+    # 打印训练信息
+    if step % 100 == 0:
+        print(f"Step {step}, Loss: {loss:.4f}")
+
+# ==================== 7. 获取词向量 ====================
+word_vectors = model.W1  # 最终的词向量矩阵
+
+# 示例：获取"learning"的词向量
+word = "learning"
+if word in word2id:
+    vector = word_vectors[word2id[word]]
+    print(f"Vector for '{word}':\n{vector}")
