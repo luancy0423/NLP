@@ -1,0 +1,73 @@
+import torch
+import matplotlib.pyplot as plt
+
+# ==================== 1. 生成模拟数据 ====================
+# 真实函数：y = 2x + 1 + 噪声
+x = torch.linspace(0, 5, 100)  # 生成0到5之间的100个等间距点
+noise = torch.randn(100) * 1.5  # 生成符合正态分布的噪声
+y_true = 2 * x + 1 + noise  # 生成带噪声的真实标签
+
+# ==================== 2. 定义模型参数 ====================
+# 初始化需要优化的参数（斜率w和截距b）
+# requires_grad=True 表示需要跟踪这些变量的梯度
+w = torch.tensor(0.0, requires_grad=True)  # 初始值设为0
+b = torch.tensor(0.0, requires_grad=True)  # 初始值设为0
+
+# ==================== 3. 定义训练超参数 ====================
+learning_rate = 0.01  # 学习率（步长）
+epochs = 100  # 迭代次数
+
+# 存储训练过程数据
+loss_history = []
+
+# ==================== 4. 训练循环 ====================
+for epoch in range(epochs):
+    # 前向传播：计算预测值
+    y_pred = w * x + b
+
+    # 计算损失（均方误差）
+    loss = torch.mean((y_pred - y_true) ** 2)
+
+    # 反向传播：自动计算梯度
+    loss.backward()  # 这会计算d(loss)/dw和d(loss)/db
+
+    # 记录损失值（注意要取.item()转换为Python数值）
+    loss_history.append(loss.item())
+
+    # 手动更新参数（梯度下降步骤）
+    # 必须使用torch.no_grad()，因为参数更新操作不应被记录在计算图中
+    with torch.no_grad():
+        w -= learning_rate * w.grad  # w = w - lr * d(loss)/dw
+        b -= learning_rate * b.grad  # b = b - lr * d(loss)/db
+
+        # 清空梯度（重要！否则梯度会累积）
+        w.grad.zero_()
+        b.grad.zero_()
+
+    # 每10次迭代打印进度
+    if epoch % 10 == 0:
+        print(f'Epoch {epoch:3d}: loss={loss.item():.4f}, w={w.item():.2f}, b={b.item():.2f}')
+
+# ==================== 5. 可视化结果 ====================
+# 绘制损失曲线
+plt.figure(figsize=(12, 4))
+plt.subplot(1, 2, 1)
+plt.plot(loss_history)
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Training Loss')
+
+# 绘制拟合直线与原始数据
+plt.subplot(1, 2, 2)
+plt.scatter(x.numpy(), y_true.numpy(), label='Original data')
+plt.plot(x.numpy(), (w * x + b).detach().numpy(),
+         c='red', label=f'Fitted line: y={w.item():.2f}x + {b.item():.2f}')
+plt.xlabel('x')
+plt.ylabel('y')
+plt.legend()
+plt.show()
+
+# ==================== 6. 最终输出 ====================
+print("\nFinal parameters:")
+print(f"True function: y = 2.00x + 1.00")
+print(f"Learned function: y = {w.item():.2f}x + {b.item():.2f}")
