@@ -1,0 +1,39 @@
+import numpy as np
+
+def matrix_derivative_linear(a, X, b):
+    """
+    计算标量函数 f = a^T X b 对矩阵 X 的导数。
+    根据公式: ∂f/∂X = a * b^T
+
+    参数:
+    a : 列向量 (n x 1)
+    X : 输入矩阵 (n x m)
+    b : 列向量 (m x 1)
+
+    返回:
+    derivative : 导数矩阵 (n x m)
+    """
+    # 确保向量是二维列向量（NumPy的一维数组需转换）
+    a = a.reshape(-1, 1) if a.ndim == 1 else a
+    b = b.reshape(-1, 1) if b.ndim == 1 else b
+
+    # 计算外积 a * b^T
+    derivative = np.dot(a, b.T)
+    
+    return derivative
+
+# 示例测试
+if __name__ == "__main__":
+    # 定义向量和矩阵
+    a = np.array([1, 2])          # 2x1 向量
+    X = np.array([[3, 4], [5, 6]])# 2x2 矩阵（实际X的值不影响导数结果）
+    b = np.array([7, 8])          # 2x1 向量
+
+    # 计算导数
+    deriv = matrix_derivative_linear(a, X, b)
+    
+    print("导数矩阵 ∂f/∂X = a * b^T：\n", deriv)
+
+    # 验证结果正确性（预期结果为 [[7,8], [14,16]]）
+    expected = np.outer(a, b)
+    print("\n验证外积结果是否一致：\n", expected)
