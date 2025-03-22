@@ -1,0 +1,172 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchtext.legacy import data, datasets
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+import numpy as np
+
+# 超参数配置
+BATCH_SIZE = 64
+EMBED_DIM = 256
+HIDDEN_DIM = 128
+NUM_LAYERS = 2
+DROPOUT = 0.5
+LR = 0.001
+GRAD_CLIP = 1.0
+PATIENCE = 3  # 早停耐心值
+
+# 数据预处理
+TEXT = data.Field(tokenize='spacy', include_lengths=True)
+LABEL = data.LabelField(dtype=torch.float)
+
+# 加载IMDB数据集
+train_data, test_data = datasets.IMDB.splits(TEXT, LABEL)
+
+# 构建词汇表
+TEXT.build_vocab(train_data, max_size=25000, vectors="glove.6B.300d")
+LABEL.build_vocab(train_data)
+
+# 创建迭代器
+train_iterator, test_iterator = data.BucketIterator.splits(
+    (train_data, test_data),
+    batch_size=BATCH_SIZE,
+    sort_key=lambda x: len(x.text),
+    sort_within_batch=True,
+    device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+)
+
+# 定义带Attention的BiLSTM模型
+class AdvancedRNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        # 嵌入层（使用预训练词向量）
+        self.embedding = nn.Embedding.from_pretrained(TEXT.vocab.vectors)
+        self.embedding_dim = EMBED_DIM
+        
+        # 双向LSTM
+        self.lstm = nn.LSTM(
+            input_size=EMBED_DIM,
+            hidden_size=HIDDEN_DIM,
+            num_layers=NUM_LAYERS,
+            bidirectional=True,
+            dropout=DROPOUT if NUM_LAYERS > 1 else 0,
+            batch_first=True
+        )
+        
+        # 注意力机制
+        self.attention = nn.Sequential(
+            nn.Linear(2*HIDDEN_DIM, HIDDEN_DIM),
+            nn.Tanh(),
+            nn.Linear(HIDDEN_DIM, 1, bias=False)
+        )
+        
+        # 分类器
+        self.classifier = nn.Sequential(
+            nn.Dropout(DROPOUT),
+            nn.Linear(2*HIDDEN_DIM, HIDDEN_DIM),
+            nn.LayerNorm(HIDDEN_DIM),
+            nn.ReLU(),
+            nn.Linear(HIDDEN_DIM, 1)
+        )
+
+    def forward(self, text, text_lengths):
+        # text: (batch_size, seq_len)
+        # text_lengths: (batch_size, )
+        
+        embedded = self.embedding(text)  # (batch, seq_len, emb_dim)
+        
+        # 打包序列以加速计算
+        packed_embedded = pack_padded_sequence(
+            embedded, text_lengths.cpu(), batch_first=True, enforce_sorted=False
+        )
+        
+        # LSTM输出
+        packed_output, (hidden, cell) = self.lstm(packed_embedded)
+        output, _ = pad_packed_sequence(packed_output, batch_first=True)  # (batch, seq_len, 2*hidden_dim)
+        
+        # 注意力权重计算
+        attn_weights = self.attention(output).squeeze(2)  # (batch, seq_len)
+        attn_weights = torch.softmax(attn_weights, dim=1)
+        
+        # 上下文向量
+        context = torch.bmm(attn_weights.unsqueeze(1), output).squeeze(1)  # (batch, 2*hidden_dim)
+        
+        # 分类
+        return self.classifier(context)
+
+# 初始化模型
+model = AdvancedRNN()
+optimizer = optim.Adam(model.parameters(), lr=LR)
+criterion = nn.BCEWithLogitsLoss()
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = model.to(device)
+
+# 训练函数（含梯度裁剪和早停）
+def train(model, iterator, optimizer, criterion):
+    model.train()
+    total_loss = 0
+    
+    for batch in iterator:
+        text, text_lengths = batch.text
+        predictions = model(text, text_lengths).squeeze(1)
+        loss = criterion(predictions, batch.label)
+        
+        optimizer.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)  # 梯度裁剪
+        optimizer.step()
+        
+        total_loss += loss.item()
+    
+    return total_loss / len(iterator)
+
+# 评估函数
+def evaluate(model, iterator, criterion):
+    model.eval()
+    total_loss = 0
+    correct = 0
+    total = 0
+    
+    with torch.no_grad():
+        for batch in iterator:
+            text, text_lengths = batch.text
+            predictions = model(text, text_lengths).squeeze(1)
+            loss = criterion(predictions, batch.label)
+            
+            total_loss += loss.item()
+            rounded_preds = torch.round(torch.sigmoid(predictions))
+            correct += (rounded_preds == batch.label).sum().item()
+            total += batch.batch_size
+    
+    return total_loss / len(iterator), correct / total
+
+# 训练循环（含早停）
+best_accuracy = 0
+patience_counter = 0
+
+for epoch in range(100):
+    train_loss = train(model, train_iterator, optimizer, criterion)
+    valid_loss, valid_acc = evaluate(model, test_iterator, criterion)
+    
+    print(f'Epoch: {epoch+1:02}')
+    print(f'\tTrain Loss: {train_loss:.3f}')
+    print(f'\t Val. Loss: {valid_loss:.3f}')
+    print(f'\t Val. Acc: {valid_acc*100:.2f}%')
+    
+    # 早停机制
+    if valid_acc > best_accuracy:
+        best_accuracy = valid_acc
+        patience_counter = 0
+        torch.save(model.state_dict(), 'best_model.pt')
+    else:
+        patience_counter += 1
+    
+    if patience_counter >= PATIENCE:
+        print("Early stopping triggered!")
+        break
+
+# 加载最佳模型进行最终测试
+model.load_state_dict(torch.load('best_model.pt'))
+test_loss, test_acc = evaluate(model, test_iterator, criterion)
+print(f'\nFinal Test Accuracy: {test_acc*100:.2f}%')
