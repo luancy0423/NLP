@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchtext.legacy import data, datasets
+from torchtext.legacy import data, datasets  #在较新的版本中此库已经被移除
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import numpy as np
 
