@@ -1,0 +1,107 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+from sklearn.model_selection import train_test_split
+
+# 超参数设置
+SEQ_LENGTH = 10      # 输入序列长度
+INPUT_SIZE = 1       # 每个时间步的输入特征维度
+HIDDEN_SIZE = 32     # RNN隐藏层维度
+NUM_CLASSES = 2      # 输出类别数（偶数/奇数）
+NUM_EPOCHS = 50      # 训练轮次
+BATCH_SIZE = 64      # 批次大小
+LEARNING_RATE = 0.001
+
+# 生成模拟数据（二进制序列分类）
+def generate_data(num_samples):
+    # 生成随机二进制序列 (0或1)
+    X = np.random.randint(0, 2, (num_samples, SEQ_LENGTH, INPUT_SIZE))
+    # 计算标签：序列中1的个数是否为偶数
+    y = (X.sum(axis=(1,2)) % 2).astype(int)
+    return torch.FloatTensor(X), torch.LongTensor(y)
+
+# 创建数据加载器
+X, y = generate_data(1000)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+train_dataset = torch.utils.data.TensorDataset(X_train, y_train)
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+
+test_dataset = torch.utils.data.TensorDataset(X_test, y_test)
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE)
+
+# 定义RNN模型
+class SimpleRNN(nn.Module):
+    def __init__(self):
+        super(SimpleRNN, self).__init__()
+        self.rnn = nn.RNN(
+            input_size=INPUT_SIZE,
+            hidden_size=HIDDEN_SIZE,
+            batch_first=True  # 输入格式为(batch, seq_len, input_size)
+        )
+        self.fc = nn.Linear(HIDDEN_SIZE, NUM_CLASSES)
+    
+    def forward(self, x):
+        # RNN前向传播：返回所有时间步的输出
+        out, _ = self.rnn(x)  # out形状：(batch, seq_len, hidden_size)
+        
+        # 只取最后一个时间步的输出用于分类
+        out = self.fc(out[:, -1, :])
+        return out
+
+# 初始化模型、损失函数和优化器
+model = SimpleRNN()
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+# 训练循环
+for epoch in range(NUM_EPOCHS):
+    model.train()
+    total_loss = 0
+    correct = 0
+    total = 0
+    
+    for inputs, labels in train_loader:
+        optimizer.zero_grad()
+        
+        # 前向传播
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        
+        # 反向传播与优化
+        loss.backward()
+        optimizer.step()
+        
+        # 统计指标
+        total_loss += loss.item()
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+    
+    # 验证集评估
+    model.eval()
+    test_correct = 0
+    test_total = 0
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs.data, 1)
+            test_total += labels.size(0)
+            test_correct += (predicted == labels).sum().item()
+    
+    # 打印训练进度
+    print(f"Epoch [{epoch+1}/{NUM_EPOCHS}], "
+          f"Loss: {total_loss/len(train_loader):.4f}, "
+          f"Train Acc: {100*correct/total:.2f}%, "
+          f"Test Acc: {100*test_correct/test_total:.2f}%")
+
+print("训练完成")
+
+# 最终测试（可选）
+model.eval()
+with torch.no_grad():
+    test_outputs = model(X_test)
+    _, predicted = torch.max(test_outputs.data, 1)
+    accuracy = (predicted == y_test).sum().item() / y_test.size(0)
+    print(f"\n最终测试准确率：{accuracy*100:.2f}%")
